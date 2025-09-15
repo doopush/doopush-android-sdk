@@ -182,11 +182,11 @@ jobs:
           
           下载 \`DooPushSDK.aar\` 文件，集成到您的 Android 项目中。
           
-          详细集成步骤、厂商推送支持和配置说明请查看完整的 [Android 集成指南](https://docs.doopush.com/sdk/android-integration)。
+          详细集成步骤、厂商推送支持和配置说明请查看完整的 [Android 集成指南](https://doopush.com/docs/sdk/android-integration.html)。
           
           ### 🔗 相关链接
           - [文档](https://doopush.com/docs)
-          - [集成指南](https://doopush.com/docs/sdk/android-integration)
+          - [集成指南](https://doopush.com/docs/sdk/android-integration.html)
           - [示例项目](https://github.com/doopush/doopush/tree/main/sdk/android/DooPushSDKExample)
           EOF
           
