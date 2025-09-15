@@ -180,38 +180,9 @@ jobs:
           
           ### 📦 集成方式
           
-          #### Gradle 集成
-          \`\`\`gradle
-          dependencies {
-              implementation 'com.doopush:doopush-sdk:${VERSION}'
-          }
-          \`\`\`
+          下载 \`DooPushSDK.aar\` 文件，集成到您的 Android 项目中。
           
-          #### 手动集成
-          1. 下载 \`DooPushSDK.aar\`
-          2. 放置到 app/libs 目录
-          3. 在 app/build.gradle 中添加：
-          \`\`\`gradle
-          dependencies {
-              implementation files('libs/DooPushSDK.aar')
-          }
-          \`\`\`
-          
-          ### 🔧 权限配置
-          \`\`\`xml
-          <uses-permission android:name="android.permission.INTERNET" />
-          <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-          <uses-permission android:name="android.permission.WAKE_LOCK" />
-          \`\`\`
-          
-          ### 🏭 厂商推送支持
-          - 华为 HMS Push
-          - 小米推送
-          - OPPO推送
-          - VIVO推送
-          - 荣耀推送
-          - 三星推送
-          - FCM (Google)
+          详细集成步骤、厂商推送支持和配置说明请查看完整的 [Android 集成指南](https://docs.doopush.com/sdk/android-integration)。
           
           ### 🔗 相关链接
           - [文档](https://doopush.com/docs)
