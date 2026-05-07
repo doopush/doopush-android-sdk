@@ -19,7 +19,11 @@ class DooPushManager private constructor() {
     
     companion object {
         private const val TAG = "DooPushManager"
-        
+
+        private val VALID_REGISTER_VENDORS = setOf(
+            "apns", "fcm", "hms", "honor", "xiaomi", "oppo", "vivo", "meizu"
+        )
+
         @Volatile
         private var INSTANCE: DooPushManager? = null
         
@@ -49,7 +53,57 @@ class DooPushManager private constructor() {
             return INSTANCE?.callback != null
         }
     }
-    
+
+    /**
+     * 通知管理模式（marker 标记位）
+     *
+     * 此 enum 本身不直接改变 SDK 行为——它是一个**协调标记**，供上层 SDK
+     * （例如 React Native bridge / Expo Module）读取并据此自行调用其它具体开关。
+     *
+     * **典型 PASSIVE 模式配置**（让位给第三方 SDK 处理 FCM）：
+     * ```
+     * DooPushManager.getInstance().setNotificationManagementMode(PASSIVE)
+     * DooPushManager.getInstance().setFCMNotificationDisplayEnabled(false)
+     * DooPushManager.getInstance().setExpoNotificationRelayEnabled(true)
+     * // 之后由上层 SDK 拿到 token 后调用 registerDevice(token, vendor, callback)
+     * ```
+     *
+     * - **ACTIVE**：默认。SDK 自管 FCM 通知展示、token 注册等
+     * - **PASSIVE**：让位标记。SDK 自身行为不会因此改变；调用方需配合上述其它开关
+     */
+    enum class NotificationManagementMode { ACTIVE, PASSIVE }
+
+    /** 当前通知管理模式 */
+    @Volatile
+    var notificationManagementMode: NotificationManagementMode = NotificationManagementMode.ACTIVE
+        private set
+
+    /** 设置通知管理模式 */
+    fun setNotificationManagementMode(mode: NotificationManagementMode) {
+        notificationManagementMode = mode
+        Log.i(TAG, "通知管理模式设置为: $mode")
+    }
+
+    /** FCM 通道是否由 DooPush 自管展示通知（默认 true）。设 false 让位给上层（expo-notifications / react-native-firebase） */
+    @Volatile
+    var isFCMNotificationDisplayEnabled: Boolean = true
+        private set
+
+    fun setFCMNotificationDisplayEnabled(enabled: Boolean) {
+        isFCMNotificationDisplayEnabled = enabled
+        Log.i(TAG, "FCM 通知展示开关: $enabled")
+    }
+
+    /** 是否向上层 SDK（如 expo-notifications）转播 FCM 消息（默认 false） */
+    @Volatile
+    var isExpoNotificationRelayEnabled: Boolean = false
+        private set
+
+    fun setExpoNotificationRelayEnabled(enabled: Boolean) {
+        isExpoNotificationRelayEnabled = enabled
+        Log.i(TAG, "Expo 通知转播开关: $enabled")
+    }
+
     // 核心组件
     private var config: DooPushConfig? = null
     private var deviceManager: DooPushDevice? = null
@@ -61,7 +115,7 @@ class DooPushManager private constructor() {
     private var vivoService: VivoService? = null
     private var meizuService: MeizuService? = null
     private var honorService: HonorService? = null
-    private var tcpConnection: DooPushTCPConnection? = null
+    private var wsConnection: DooPushWebSocketConnection? = null
     private var applicationContext: Context? = null
     
     // 状态管理
@@ -84,36 +138,26 @@ class DooPushManager private constructor() {
     }
     
     /**
-     * TCP连接代理实现
+     * WebSocket 连接监听器实现
      */
-    private val tcpConnectionDelegate = object : DooPushTCPConnectionDelegate {
-        override fun onStateChanged(connection: DooPushTCPConnection, state: DooPushTCPState) {
-            Log.d(TAG, "TCP连接状态变更: ${state.description}")
-            callback?.onTCPStateChanged(state)
+    private val wsListener = object : DooPushWebSocketConnection.Listener {
+        override fun onOpen() {
+            Log.i(TAG, "WebSocket 连接已建立")
+            callback?.onWebSocketOpen()
         }
-        
-        override fun onRegisterSuccessfully(connection: DooPushTCPConnection, message: DooPushTCPMessage) {
-            Log.i(TAG, "TCP设备注册成功")
-            callback?.onTCPRegistered()
+
+        override fun onClosed(code: Int, reason: String) {
+            Log.i(TAG, "WebSocket 连接已关闭: code=$code reason=$reason")
+            callback?.onWebSocketClosed(code, reason)
         }
-        
-        override fun onReceiveError(connection: DooPushTCPConnection, error: DooPushError, message: String) {
-            Log.e(TAG, "TCP连接错误: ${error.message} - $message")
-            callback?.onTCPError(error, message)
-        }
-        
-        override fun onReceiveHeartbeatResponse(connection: DooPushTCPConnection, message: DooPushTCPMessage) {
-            Log.d(TAG, "收到TCP心跳响应")
-            callback?.onTCPHeartbeat()
-        }
-        
-        override fun onReceivePushMessage(connection: DooPushTCPConnection, message: DooPushTCPMessage) {
-            Log.i(TAG, "收到TCP推送消息")
-            // 可以在这里解析推送消息并通过callback传递给应用
-            callback?.onTCPPushMessage(message)
+
+        override fun onFailure(t: Throwable) {
+            Log.w(TAG, "WebSocket 连接失败: ${t.message}")
+            callback?.onWebSocketFailure(t)
         }
     }
-    
+
+
     /**
      * 配置 DooPush SDK
      * 
@@ -271,10 +315,6 @@ class DooPushManager private constructor() {
                     autoInitialize()
                 }
             }
-            tcpConnection = DooPushTCPConnection().apply {
-                delegate = tcpConnectionDelegate
-            }
-            
             // 配置统计管理器
             DooPushStatistics.configure(networking!!) { cachedToken }
             
@@ -847,24 +887,17 @@ class DooPushManager private constructor() {
     }
     
     /**
-     * 获取TCP连接状态
+     * 手动连接 WebSocket（注册成功后由 SDK 自动调用，通常无需手动调用）
      */
-    fun getTCPConnectionState(): DooPushTCPState? {
-        return tcpConnection?.state
+    fun connectWebSocket() {
+        wsConnection?.connect()
     }
-    
+
     /**
-     * 手动连接TCP
+     * 手动断开 WebSocket
      */
-    fun connectTCP() {
-        tcpConnection?.connect()
-    }
-    
-    /**
-     * 手动断开TCP
-     */
-    fun disconnectTCP() {
-        tcpConnection?.disconnect()
+    fun disconnectWebSocket() {
+        wsConnection?.disconnect()
     }
 
     /**
@@ -872,7 +905,6 @@ class DooPushManager private constructor() {
      * @param context Android 上下文，推荐使用 Application 上下文
      */
     fun applicationDidBecomeActive(context: Context) {
-        tcpConnection?.applicationDidBecomeActive()
         Log.d(TAG, "应用进入前台")
         // 清除通知栏消息
         // TODO 如果应用没有初始化 SDK 也可以清除通知？
@@ -887,7 +919,6 @@ class DooPushManager private constructor() {
      * 应用进入后台时调用
      */
     fun applicationWillResignActive() {
-        tcpConnection?.applicationWillResignActive()
         Log.d(TAG, "应用进入后台，上报统计数据")
         // 应用进入后台时上报统计数据
         DooPushStatistics.reportStatistics()
@@ -897,7 +928,7 @@ class DooPushManager private constructor() {
      * 应用即将终止时调用
      */
     fun applicationWillTerminate() {
-        tcpConnection?.applicationWillTerminate()
+        wsConnection?.disconnect()
         Log.d(TAG, "应用即将终止，上报统计数据")
         // 应用终止时上报统计数据
         DooPushStatistics.reportStatistics()
@@ -933,7 +964,7 @@ class DooPushManager private constructor() {
         builder.append("  有回调监听器: ${callback != null}\n")
         builder.append("  有缓存Token: ${!cachedToken.isNullOrEmpty()}\n")
         builder.append("  有缓存设备信息: ${cachedDeviceInfo != null}\n")
-        builder.append("  TCP连接状态: ${tcpConnection?.state?.description ?: "未初始化"}\n")
+        builder.append("  WebSocket连接: ${if (wsConnection != null) "已创建" else "未初始化"}\n")
         builder.append("  ${DooPushStatistics.getStatisticsSummary()}\n")
         
         config?.let { builder.append("\n${it.getSummary()}") }
@@ -969,9 +1000,10 @@ class DooPushManager private constructor() {
             // 释放网络资源
             networking?.release()
             
-            // 释放TCP连接
-            tcpConnection?.release()
-            
+            // 断开 WebSocket 连接
+            wsConnection?.disconnect()
+            wsConnection = null
+
             // 清除缓存
             clearCache()
             
@@ -987,8 +1019,7 @@ class DooPushManager private constructor() {
             fcmService = null
             hmsService = null
             xiaomiService = null
-            tcpConnection = null
-            
+
             Log.i(TAG, "SDK资源已释放")
             
         } catch (e: Exception) {
@@ -996,6 +1027,54 @@ class DooPushManager private constructor() {
         }
     }
     
+    /**
+     * 用调用方已有的推送 token 直接完成 DooPush 服务端注册
+     * 跳过 SDK 内部权限请求 / 厂商 SDK 初始化 / token 获取流程
+     *
+     * @param token  调用方已经从 APNs / FCM / OEM 渠道拿到的设备 token
+     * @param vendor 通道标识："apns"/"fcm"/"hms"/"honor"/"xiaomi"/"oppo"/"vivo"/"meizu"
+     *               用于服务端正确归类设备 channel
+     * @param callback 注册结果回调
+     */
+    fun registerDevice(
+        token: String,
+        vendor: String,
+        callback: DooPushRegisterCallback
+    ) {
+        if (!checkInitialized()) {
+            callback.onError(DooPushError.configNotInitialized())
+            return
+        }
+        if (vendor !in VALID_REGISTER_VENDORS) {
+            callback.onError(
+                DooPushError(
+                    code = DooPushError.CONFIG_INVALID_PARAMETER,
+                    message = "vendor 必须是: ${VALID_REGISTER_VENDORS.joinToString()}"
+                )
+            )
+            return
+        }
+        if (isRegistering.get()) {
+            Log.w(TAG, "另一个注册流程正在进行，registerDevice(token,vendor) 拒绝执行")
+            callback.onError(
+                DooPushError(
+                    code = DooPushError.REGISTRATION_IN_PROGRESS,
+                    message = "另一个注册流程正在进行，请稍后重试"
+                )
+            )
+            return
+        }
+        try {
+            val deviceInfo = deviceManager!!.getCurrentDeviceInfo(vendor)
+            cachedDeviceInfo = deviceInfo
+            cachedToken = token
+            registerDeviceToServer(deviceInfo, token, callback)
+        } catch (e: Exception) {
+            Log.e(TAG, "registerDevice(token,vendor) 失败", e)
+            callback.onError(DooPushError.fromException(e))
+        }
+    }
+
     /**
      * 注册设备到服务器
      */
@@ -1008,14 +1087,10 @@ class DooPushManager private constructor() {
             deviceInfo,
             token,
             object : DooPushNetworking.RegisterDeviceCallback {
-                override fun onSuccess(response: DooPushNetworking.DeviceRegistrationResponse) {
+                override fun onSuccess() {
                     Log.i(TAG, "设备注册成功")
                     isRegistering.set(false)
-                    
-                    // 连接到Gateway
-                    connectToGateway(response, token)
-                    
-                    // 通知回调
+                    connectToGateway(token)
                     callback?.onSuccess(token) ?: this@DooPushManager.callback?.onRegisterSuccess(token)
                 }
                 
@@ -1031,24 +1106,28 @@ class DooPushManager private constructor() {
     }
     
     /**
-     * 连接到Gateway
+     * 连接到 WebSocket Gateway
      */
-    private fun connectToGateway(response: DooPushNetworking.DeviceRegistrationResponse, token: String) {
+    private fun connectToGateway(token: String) {
         val config = this.config
         if (config == null) {
-            Log.e(TAG, "SDK配置缺失，无法连接Gateway")
+            Log.e(TAG, "SDK配置缺失，无法连接 WebSocket Gateway")
             return
         }
-        
-        val gatewayConfig = response.gateway.toTCPGatewayConfig()
-        Log.i(TAG, "准备连接Gateway - $gatewayConfig")
-        
-        tcpConnection?.configure(
-            gatewayConfig,
-            config.appId,
-            token
+
+        Log.i(TAG, "准备连接 WebSocket Gateway - ${config.baseURL}")
+
+        // 断开可能存在的旧连接
+        wsConnection?.disconnect()
+
+        wsConnection = DooPushWebSocketConnection(
+            baseUrl = config.baseURL,
+            appId = config.appId,
+            appKey = config.apiKey,
+            token = token,
+            listener = wsListener,
         )
-        tcpConnection?.connect()
+        wsConnection?.connect()
     }
     
     /**
@@ -1156,8 +1235,8 @@ class DooPushManager private constructor() {
                 Log.e(TAG, "Context为空，无法设置角标")
                 return false
             }
-            
             BadgeManager.setBadgeCount(context, count)
+
         } catch (e: Exception) {
             Log.e(TAG, "设置角标数量失败", e)
             false
